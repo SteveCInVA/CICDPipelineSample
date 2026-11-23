@@ -1,3 +1,5 @@
 **
 !Dockerfile
-!index.html
+!source/
+!source/index.html
+!source/clock.js

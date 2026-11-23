@@ -1,2 +1,2 @@
 FROM nginx:stable-alpine@sha256:3bc3836dc0be3b811f238210360bf8e7ca8a2d0effdae46160bf1f3578710051
-COPY index.html /usr/share/nginx/html/index.html
+COPY source/ /usr/share/nginx/html/
