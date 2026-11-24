@@ -13,9 +13,12 @@ param containerAppName string = 'hello-world-${uniqueString(resourceGroup().id)}
 @maxLength(50)
 param registryName string = 'acr${uniqueString(resourceGroup().id)}'
 
-@description('Public starter image for first deployment. On subsequent deployments, pass the current application image to avoid rolling back to the starter.')
+@description('Deploy the Container App only after the image has been manually uploaded to ACR. False provisions infrastructure only; use incremental deployment mode.')
+param deployContainerApp bool = false
+
+@description('Existing ACR image with tag or digest. Upload it before enabling deployContainerApp. On subsequent deployments, pass the current application image.')
 @minLength(1)
-param containerImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
+param containerImage string = '${registryName}.azurecr.io/hello-world:initial'
 
 @description('Optional object ID of the existing GitHub Actions service principal, NOT its application/client ID. Empty skips workflow role assignments.')
 param githubActionsPrincipalId string = ''
@@ -75,12 +78,33 @@ resource environment 'Microsoft.App/managedEnvironments@2025-01-01' = {
   }
 }
 
-resource app 'Microsoft.App/containerApps@2025-01-01' = {
+resource pullIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: '${containerAppName}-pull'
+  location: location
+}
+
+resource appAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registry.id, pullIdentity.id, acrPullRoleId)
+  scope: registry
+  properties: {
+    principalId: pullIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: acrPullRoleId
+  }
+}
+
+resource app 'Microsoft.App/containerApps@2025-01-01' = if (deployContainerApp) {
   name: containerAppName
   location: location
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned, UserAssigned'
+    userAssignedIdentities: {
+      '${pullIdentity.id}': {}
+    }
   }
+  dependsOn: [
+    appAcrPull
+  ]
   properties: {
     managedEnvironmentId: environment.id
     workloadProfileName: 'Consumption'
@@ -95,7 +119,7 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
       registries: [
         {
           server: registry.properties.loginServer
-          identity: 'system'
+          identity: pullIdentity.id
         }
       ]
     }
@@ -128,17 +152,6 @@ resource app 'Microsoft.App/containerApps@2025-01-01' = {
   }
 }
 
-// The public starter avoids needing this identity's role assignment before the app exists.
-resource appAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(registry.id, app.id, acrPullRoleId)
-  scope: registry
-  properties: {
-    principalId: app.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: acrPullRoleId
-  }
-}
-
 resource githubAcrPush 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(githubActionsPrincipalId)) {
   name: guid(registry.id, githubActionsPrincipalId, acrPushRoleId)
   scope: registry
@@ -159,7 +172,7 @@ resource githubAcrReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   }
 }
 
-resource githubAppContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(githubActionsPrincipalId)) {
+resource githubAppContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (deployContainerApp && !empty(githubActionsPrincipalId)) {
   name: guid(app.id, githubActionsPrincipalId, contributorRoleId)
   scope: app
   properties: {
@@ -169,12 +182,15 @@ resource githubAppContributor 'Microsoft.Authorization/roleAssignments@2022-04-0
   }
 }
 
-output applicationUrl string = 'https://${app.properties.configuration.ingress.fqdn}'
+output applicationDeployed bool = deployContainerApp
+output applicationUrl string = deployContainerApp ? 'https://${app!.properties.configuration.ingress.fqdn}' : ''
+output containerAppEnvironmentName string = environment.name
+output imagePullIdentityId string = pullIdentity.id
 output githubVariables object = {
   AZURE_TENANT_ID: tenant().tenantId
   AZURE_SUBSCRIPTION_ID: subscription().subscriptionId
   AZURE_RESOURCE_GROUP: resourceGroup().name
-  AZURE_CONTAINER_APP: app.name
+  AZURE_CONTAINER_APP: containerAppName
   ACR_NAME: registry.name
   ACR_LOGIN_SERVER: registry.properties.loginServer
 }

@@ -18,6 +18,12 @@ param(
     [ValidateNotNullOrEmpty()]
     [string] $ParametersFile = (Join-Path $PSScriptRoot '\template.parameters.json'),
 
+    [ValidateSet('Infrastructure', 'Application')]
+    [string] $Stage = 'Infrastructure',
+
+    [ValidateNotNullOrEmpty()]
+    [string] $ContainerImage,
+
     [ValidateNotNullOrEmpty()]
     [string] $Location
 )
@@ -48,14 +54,53 @@ if (-not $Location -and $null -ne $locationProperty) {
     $Location = $locationProperty.Value.value
 }
 
+if ($Stage -eq 'Application') {
+    $imageProperty = $parameterValues.PSObject.Properties['containerImage']
+    if (-not $PSBoundParameters.ContainsKey('ContainerImage') -and $null -ne $imageProperty) {
+        $ContainerImage = $imageProperty.Value.value
+    }
+    if ([string]::IsNullOrWhiteSpace($ContainerImage)) {
+        throw 'Application stage requires -ContainerImage or containerImage in the parameter file. Upload the image to ACR first.'
+    }
+}
+elseif ($PSBoundParameters.ContainsKey('ContainerImage')) {
+    throw '-ContainerImage is only supported with -Stage Application.'
+}
+
 # Explicit subscription arguments avoid changing the user's default Azure subscription.
 Invoke-AzureCli -Arguments @(
     'account', 'show', '--subscription', $SubscriptionId, '--output', 'none'
 ) | Out-Null
 Invoke-AzureCli -Arguments @('bicep', 'build', '--file', $TemplateFile, '--stdout') | Out-Null
 
+if ($Stage -eq 'Application') {
+    $outputsJson = Invoke-AzureCli -Arguments @(
+        'deployment', 'group', 'show', '--name', $DeploymentName,
+        '--resource-group', $ResourceGroupName, '--subscription', $SubscriptionId,
+        '--query', 'properties.outputs', '--output', 'json'
+    )
+    $outputs = $outputsJson | ConvertFrom-Json
+    $registryName = $outputs.githubVariables.value.ACR_NAME
+    $loginServer = $outputs.githubVariables.value.ACR_LOGIN_SERVER
+    if ([string]::IsNullOrWhiteSpace($registryName) -or [string]::IsNullOrWhiteSpace($loginServer)) {
+        throw 'Infrastructure deployment outputs must contain ACR_NAME and ACR_LOGIN_SERVER. Run -Stage Infrastructure first.'
+    }
+    $imagePrefix = "$loginServer/"
+    if (-not $ContainerImage.StartsWith($imagePrefix, [StringComparison]::Ordinal)) {
+        throw "ContainerImage must reference the provisioned registry: $loginServer"
+    }
+    $registryImage = $ContainerImage.Substring($imagePrefix.Length)
+    if ($registryImage -notmatch '^[^@\s:]+(?::[^@\s:]+|@sha256:[0-9a-fA-F]{64})$') {
+        throw 'ContainerImage must include an explicit image tag or sha256 digest.'
+    }
+    Invoke-AzureCli -Arguments @(
+        'acr', 'repository', 'show', '--name', $registryName, '--image', $registryImage,
+        '--subscription', $SubscriptionId, '--output', 'none'
+    ) | Out-Null
+}
+
 $providersReady = $true
-foreach ($provider in @('Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.OperationalInsights')) {
+foreach ($provider in @('Microsoft.App', 'Microsoft.ContainerRegistry', 'Microsoft.OperationalInsights', 'Microsoft.ManagedIdentity')) {
     $state = Invoke-AzureCli -Arguments @(
         'provider', 'show', '--namespace', $provider, '--subscription', $SubscriptionId,
         '--query', 'registrationState', '--output', 'tsv'
@@ -109,11 +154,21 @@ if (-not $providersReady) {
     throw 'Required provider registration was declined; deployment cannot continue.'
 }
 
+$stageDeploymentName = $DeploymentName
+$deployContainerAppValue = 'false'
+if ($Stage -eq 'Application') {
+    $stageDeploymentName = "$DeploymentName-app"
+    $deployContainerAppValue = 'true'
+}
 $deploymentArguments = @(
-    'deployment', 'group', 'create', '--name', $DeploymentName,
+    'deployment', 'group', 'create', '--name', $stageDeploymentName,
     '--resource-group', $ResourceGroupName, '--subscription', $SubscriptionId,
-    '--template-file', $TemplateFile, '--parameters', "@$ParametersFile"
+    '--template-file', $TemplateFile, '--mode', 'Incremental', '--parameters', "@$ParametersFile",
+    "deployContainerApp=$deployContainerAppValue"
 )
+if ($Stage -eq 'Application') {
+    $deploymentArguments += "containerImage=$ContainerImage"
+}
 if ($PSBoundParameters.ContainsKey('Location')) {
     $deploymentArguments += "location=$Location"
 }
@@ -122,6 +177,9 @@ if ($WhatIfPreference) {
     $deploymentArguments[2] = 'what-if'
     Invoke-AzureCli -Arguments $deploymentArguments
 }
-elseif ($PSCmdlet.ShouldProcess("$ResourceGroupName/$DeploymentName", 'Deploy Bicep template')) {
+elseif ($PSCmdlet.ShouldProcess("$ResourceGroupName/$stageDeploymentName", 'Deploy Bicep template')) {
     Invoke-AzureCli -Arguments ($deploymentArguments + @('--query', 'properties.outputs', '--output', 'json'))
+    if ($Stage -eq 'Infrastructure') {
+        Write-Host 'Infrastructure is ready. No Container App was deployed. Upload the image to ACR, allow AcrPull permissions to propagate, then run -Stage Application -ContainerImage <acr-image-with-tag-or-digest>.'
+    }
 }

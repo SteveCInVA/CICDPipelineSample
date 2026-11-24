@@ -5,8 +5,8 @@
     "location": {
       "value": "eastus"
     },
-    "containerImage": {
-      "value": "mcr.microsoft.com/azuredocs/containerapps-helloworld:latest"
+    "deployContainerApp": {
+      "value": false
     },
     "githubActionsPrincipalId": {
       "value": ""
