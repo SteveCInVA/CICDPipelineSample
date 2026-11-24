@@ -272,6 +272,32 @@ First, configure
 This lets GitHub exchange a short-lived token for Azure access instead of
 storing a client secret.
 
+For this repository, the subject includes immutable IDs for both the repository
+owner and the repository. Install the [GitHub CLI](https://cli.github.com/) if
+needed, then run `gh auth login` to sign in to GitHub. Use the `$repository`
+value from step 2 to retrieve the IDs (including for a fork):
+
+```powershell
+$repositoryInfoJson = gh api "repos/$repository" --jq '{owner: .owner.login, ownerId: .owner.id, name: .name, repoId: .id}'
+if ($LASTEXITCODE -ne 0) { throw "Could not read the GitHub repository metadata. Check GitHub CLI authentication and repository access." }
+
+$repositoryInfo = $repositoryInfoJson | ConvertFrom-Json
+$repositoryOwner = $repositoryInfo.owner
+$organizationId = $repositoryInfo.ownerId
+$repositoryName = $repositoryInfo.name
+$repoId = $repositoryInfo.repoId
+if ([string]::IsNullOrWhiteSpace($repositoryOwner) -or [string]::IsNullOrWhiteSpace($repositoryName) -or $organizationId -notmatch '^[1-9][0-9]*$' -or $repoId -notmatch '^[1-9][0-9]*$') {
+    throw "GitHub repository metadata is missing a valid owner, repository name, or numeric ID."
+}
+
+$subject = "repo:${repositoryOwner}@${organizationId}/${repositoryName}@${repoId}:ref:refs/heads/main"
+$subject
+```
+
+`$organizationId` is the repository owner's numeric ID (`owner.id`), whether
+the owner is an organization or a personal account. `$repoId` is the repository's
+numeric ID (`id`), not its name.
+
 The following creates a temporary JSON file containing the trust settings,
 adds the federated credential to the registration, and removes the file:
 
@@ -280,7 +306,7 @@ $credentialFile = Join-Path $env:TEMP "hello-world-github-main-$clientId.json"
 @{
     name = "github-main"
     issuer = "https://token.actions.githubusercontent.com"
-    subject = "repo:${repository}:ref:refs/heads/main"
+    subject = $subject
     audiences = @("api://AzureADTokenExchange")
 } | ConvertTo-Json | Set-Content -LiteralPath $credentialFile -Encoding ascii
 
@@ -291,9 +317,12 @@ az ad app federated-credential list --id $clientId --output json
 ```
 
 **Check:** the list must contain `github-main` with the exact issuer, audience,
-and subject above. For this repository the subject is
-`repo:SteveCInVA/CICDPipelineSample:ref:refs/heads/main`. For a fork it must name
-the fork, not the original repository. If `github-main` already exists, inspect
+and printed `$subject` above. For this repository the subject is
+`repo:SteveCInVA@37545884/CICDPipelineSample@1463326748:ref:refs/heads/main`.
+It must exactly match the subject GitHub emits in the OIDC token; repositories
+with a different OIDC subject configuration must use that configured format.
+For a fork it must use the fork's owner, name, and IDs, not the original
+repository's. If `github-main` already exists, inspect
 it rather than creating it again. This trust is for the `main` branch, not
 pull requests or a GitHub environment.
 
