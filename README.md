@@ -357,14 +357,17 @@ not configure it. No Azure client secret is needed.
 ### 7. Run and verify the first CI/CD release
 
 The [Container CI/CD workflow](.github/workflows/ci-cd.yml) runs on pushes to
-`main` and pull requests targeting `main`. There is no manual **Run workflow**
-button because it does not define `workflow_dispatch`.
+`main`, pull requests targeting `main`, and manual `workflow_dispatch` runs.
+Once this workflow is on the default branch, GitHub shows a **Run workflow**
+button. Manual runs deploy only when you select `main`.
 
 1. Push a change to `main`, or merge an approved pull request into `main`,
-   using your normal repository process. Pull request runs test the image
-   but do **not** deploy it.
+   using your normal repository process. Alternatively, open **GitHub →
+   Actions → Container CI/CD → Run workflow**, select `main`, and click
+   **Run workflow** to deploy the current committed code without a new change.
+   Pull request runs test the image but do **not** deploy it.
 2. Open **GitHub → Actions → Container CI/CD** and select the run for that
-   push to `main`.
+   push or manual run on `main`.
 3. Wait for **Test, build, and smoke-test**, then **Deploy to Azure Container
    Apps**, to succeed. CI saves the smoke-tested image as an artifact; the
    deploy job loads that exact image, pushes it to ACR, and updates the app.
@@ -377,19 +380,9 @@ button because it does not define `workflow_dispatch`.
 
 If a previous push-to-`main` run failed only because setup was incomplete,
 open that run and choose **Re-run failed jobs** after completing setup.
-For a new deployment without an application change, you can instead push an
-empty commit, if your repository permits direct pushes:
-
-```powershell
-git switch main
-git pull --ff-only
-git commit --allow-empty -m "Trigger initial Azure deployment"
-git push origin main
-```
-
-Do this only with a clean working tree and after verifying that `origin` is
-the repository configured in step 2. For protected branches, use the normal
-pull request process instead.
+For a new deployment without an application change, use **Run workflow** with
+`main` selected. This builds and tests the committed code again; it does not
+reuse an earlier deployment image or include uncommitted local changes.
 
 ### Troubleshooting setup
 
@@ -400,7 +393,7 @@ pull request process instead.
 | Azure Login reports no matching federated identity credential | Compare the credential's repository, `main` branch subject, issuer, and audience with step 5. Confirm `AZURE_CLIENT_ID` is the application client ID, not either object ID. |
 | Azure Login reports a missing client, tenant, or subscription ID | Confirm the exact variable names under GitHub **Repository variables**, not Secrets. |
 | ACR push or Container App update is denied | Check the three workflow role assignments in step 5, wait for propagation, then re-run the failed jobs. Do not enable the ACR admin account as a workaround. |
-| Deploy job is skipped | Use a push to `main`; pull request runs intentionally build/test only. |
+| Deploy job is skipped | Use a push to `main` or a manual run with `main` selected; pull request runs and manual runs on other branches intentionally build/test only. |
 | Application stage rejects a missing image or registry mismatch | Complete step 3 Phase B and supply the exact tagged image from the registry created in Phase A. The helper does not build or push images. |
 | App deployment reports an image pull error | Confirm the image exists and the `<container-app-name>-pull` identity has AcrPull; allow role propagation and retry Phase C. |
 | Infrastructure stage has no application URL | Expected on a new deployment: complete the manual upload and Application stage. Do not start CI/CD until the app exists. |
@@ -496,7 +489,7 @@ concurrent deployments.
 
 Pull requests targeting `main` run the clock function tests, build the container,
 and check that `/` returns the Local Clock heading and `/clock.js` is served.
-A push to `main` runs the same checks, pushes the tested
+A push to `main` or a manual **Run workflow** run on `main` runs the same checks, pushes the tested
 image to ACR, and updates the Container App to a new revision. After the deploy
 job succeeds, open the app's **Application URL** in the Azure portal to confirm
 that it serves the updated page.
